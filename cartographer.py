@@ -8,15 +8,14 @@ from PyQt6.QtWidgets import (
     QLabel, QMessageBox, QInputDialog, QFileDialog
 )
 
-# посмотреть ошибки, дизайн, exe и презетавция
-
 DB = "cartographer.sqlite"
-C = 28
+CELL_SIZE = 28
+
 
 def init_db():
-    con = sqlite3.connect(DB)
-    cur = con.cursor()
-    cur.executescript("""
+    connection = sqlite3.connect(DB)
+    cursor = connection.cursor()
+    cursor.executescript("""
     CREATE TABLE IF NOT EXISTS levels (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -32,45 +31,47 @@ def init_db():
         FOREIGN KEY (level_id) REFERENCES levels(id) ON DELETE CASCADE
     );
     """)
-    con.commit()
-    con.close()
+    connection.commit()
+    connection.close()
 
 
 class Canvas(QWidget):
-    def __init__(self, con):
+    def __init__(self, connection):
         super().__init__()
-        self.con = con
+        self.connection = connection
         self.level_id = None
-        self.w = 20
-        self.h = 15
+        self.width = 20
+        self.height = 15
         self.tool = "wall"
         self.tiles = {}
         self.path = []
 
-        self.setMinimumSize(self.w * C + 2, self.h * C + 2)
+        self.setMinimumSize(self.width * CELL_SIZE + 2, self.height * CELL_SIZE + 2)
 
-        self.px = {}
+        self.pixmaps = {}
         colors = {"wall": "#555", "start": "#2ecc71", "finish": "#f1c40f", "enemy": "#e74c3c"}
-        for k, c in colors.items():
-            p = QPixmap(C - 2, C - 2)
-            p.fill(QColor(c))
-            self.px[k] = p
+        for kind, color in colors.items():
+            pixmap = QPixmap(CELL_SIZE - 2, CELL_SIZE - 2)
+            pixmap.fill(QColor(color))
+            self.pixmaps[kind] = pixmap
 
-    def set_level(self, level_id, w, h):
+    def set_level(self, level_id, width, height):
         self.level_id = level_id
-        self.w = w
-        self.h = h
+        self.width = width
+        self.height = height
         self.path = []
-        self.setMinimumSize(self.w * C + 2, self.h * C + 2)
+        self.setMinimumSize(self.width * CELL_SIZE + 2, self.height * CELL_SIZE + 2)
         self.load_tiles()
 
     def load_tiles(self):
         self.tiles = {}
         if self.level_id:
-            cur = self.con.cursor()
-            res = cur.execute("SELECT x, y, kind FROM tiles WHERE level_id = ?", (self.level_id,)).fetchall()
-            for x, y, k in res:
-                self.tiles[(x, y)] = k
+            cursor = self.connection.cursor()
+            result = cursor.execute(
+                "SELECT x, y, kind FROM tiles WHERE level_id = ?", (self.level_id,)
+            ).fetchall()
+            for x, y, kind in result:
+                self.tiles[(x, y)] = kind
         self.update()
 
     def set_tool(self, tool):
@@ -80,102 +81,112 @@ class Canvas(QWidget):
         if not self.level_id:
             return
 
-        x = int(event.position().x() // C)
-        y = int(event.position().y() // C)
+        x = int(event.position().x() // CELL_SIZE)
+        y = int(event.position().y() // CELL_SIZE)
 
-        if not (0 <= x < self.w and 0 <= y < self.h):
+        if not (0 <= x < self.width and 0 <= y < self.height):
             return
 
-        cur = self.con.cursor()
-        k = (x, y)
+        cursor = self.connection.cursor()
+        key = (x, y)
 
         if self.tool == "erase":
-            if k in self.tiles:
-                del self.tiles[k]
-                cur.execute("DELETE FROM tiles WHERE level_id = ? AND x = ? AND y = ?", (self.level_id, x, y))
+            if key in self.tiles:
+                del self.tiles[key]
+                cursor.execute(
+                    "DELETE FROM tiles WHERE level_id = ? AND x = ? AND y = ?",
+                    (self.level_id, x, y)
+                )
         else:
             if self.tool in ("start", "finish"):
-                for i, v in list(self.tiles.items()):
-                    if v == self.tool:
-                        del self.tiles[i]
-                        cur.execute("DELETE FROM tiles WHERE level_id = ? AND x = ? AND y = ?",
-                                    (self.level_id, i[0], i[1]))
+                for old_key, old_value in list(self.tiles.items()):
+                    if old_value == self.tool:
+                        del self.tiles[old_key]
+                        cursor.execute(
+                            "DELETE FROM tiles WHERE level_id = ? AND x = ? AND y = ?",
+                            (self.level_id, old_key[0], old_key[1])
+                        )
 
-            self.tiles[k] = self.tool
-            cur.execute("INSERT OR REPLACE INTO tiles (level_id, x, y, kind) VALUES (?, ?, ?, ?)",
-                        (self.level_id, x, y, self.tool))
+            self.tiles[key] = self.tool
+            cursor.execute(
+                "INSERT OR REPLACE INTO tiles (level_id, x, y, kind) VALUES (?, ?, ?, ?)",
+                (self.level_id, x, y, self.tool)
+            )
 
-        self.con.commit()
+        self.connection.commit()
         self.path = []
         self.update()
 
     def paintEvent(self, event):
-        qp = QPainter()
-        qp.begin(self)
+        painter = QPainter()
+        painter.begin(self)
 
-        qp.fillRect(self.rect(), QColor("#fafafa"))
+        painter.fillRect(self.rect(), QColor("#fafafa"))
 
-        qp.setPen(QPen(QColor("#ddd"), 1))
-        for x in range(self.w + 1):
-            qp.drawLine(x * C, 0, x * C, self.h * C)
-        for y in range(self.h + 1):
-            qp.drawLine(0, y * C, self.w * C, y * C)
+        painter.setPen(QPen(QColor("#ddd"), 1))
+        for x in range(self.width + 1):
+            painter.drawLine(x * CELL_SIZE, 0, x * CELL_SIZE, self.height * CELL_SIZE)
+        for y in range(self.height + 1):
+            painter.drawLine(0, y * CELL_SIZE, self.width * CELL_SIZE, y * CELL_SIZE)
 
-        for (x, y), k in self.tiles.items():
-            qp.drawPixmap(x * C + 1, y * C + 1, self.px[k])
+        for (x, y), kind in self.tiles.items():
+            painter.drawPixmap(x * CELL_SIZE + 1, y * CELL_SIZE + 1, self.pixmaps[kind])
 
         if self.path:
-            qp.setPen(QPen(QColor("#3498db"), 3))
-            for i in range(len(self.path) - 1):
-                x1, y1 = self.path[i]
-                x2, y2 = self.path[i + 1]
-                qp.drawLine(x1 * C + C // 2, y1 * C + C // 2,
-                            x2 * C + C // 2, y2 * C + C // 2)
+            painter.setPen(QPen(QColor("#3498db"), 3))
+            for index in range(len(self.path) - 1):
+                x1, y1 = self.path[index]
+                x2, y2 = self.path[index + 1]
+                painter.drawLine(
+                    x1 * CELL_SIZE + CELL_SIZE // 2, y1 * CELL_SIZE + CELL_SIZE // 2,
+                    x2 * CELL_SIZE + CELL_SIZE // 2, y2 * CELL_SIZE + CELL_SIZE // 2
+                )
 
-        qp.setPen(QColor("#333"))
-        qp.setFont(QFont("Arial", 9))
-        qp.drawText(6, 16, f"Инструмент: {self.tool}   Уровень #{self.level_id}")
+        painter.setPen(QColor("#333"))
+        painter.setFont(QFont("Arial", 9))
+        painter.drawText(6, 16, f"Инструмент: {self.tool}   Уровень #{self.level_id}")
 
-        qp.end()
+        painter.end()
 
     def find_path(self):
-        start = next((k for k, v in self.tiles.items() if v == "start"), None)
-        finish = next((k for k, v in self.tiles.items() if v == "finish"), None)
+        start = next((key for key, value in self.tiles.items() if value == "start"), None)
+        finish = next((key for key, value in self.tiles.items() if value == "finish"), None)
 
         if not start or not finish:
             QMessageBox.warning(self, "Внимание", "Нужны старт и финиш!")
             return
 
-        walls = {k for k, v in self.tiles.items() if v == "wall"}
-        q = deque([start])
-        prev = {start: None}
+        walls = {key for key, value in self.tiles.items() if value == "wall"}
+        queue = deque([start])
+        previous = {start: None}
 
-        while q:
-            cur = q.popleft()
-            if cur == finish:
+        while queue:
+            current = queue.popleft()
+            if current == finish:
                 break
-            x, y = cur
+            x, y = current
             for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                nxt = (x + dx, y + dy)
-                if (0 <= nxt[0] < self.w and 0 <= nxt[1] < self.h
-                        and nxt not in walls and nxt not in prev):
-                    prev[nxt] = cur
-                    q.append(nxt)
+                neighbor = (x + dx, y + dy)
+                if (0 <= neighbor[0] < self.width and 0 <= neighbor[1] < self.height
+                        and neighbor not in walls and neighbor not in previous):
+                    previous[neighbor] = current
+                    queue.append(neighbor)
 
-        if finish not in prev:
+        if finish not in previous:
             QMessageBox.information(self, "Поиск пути", "Путь не найден")
             self.path = []
             self.update()
             return
 
         path = []
-        cur = finish
-        while cur is not None:
-            path.append(cur)
-            cur = prev[cur]
+        current = finish
+        while current is not None:
+            path.append(current)
+            current = previous[current]
 
         self.path = path[::-1]
         self.update()
+
 
 class StartWindow(QWidget):
     def __init__(self):
@@ -183,17 +194,21 @@ class StartWindow(QWidget):
         self.setWindowTitle("Картограф")
         self.resize(450, 300)
 
-        l = QVBoxLayout(self)
+        layout = QVBoxLayout(self)
 
-        t = QLabel("Картограф")
-        t.setStyleSheet("font-size: 28px; font-weight: bold;")
+        title = QLabel("Картограф")
+        title.setStyleSheet("font-size: 28px; font-weight: bold;")
 
-        d = QLabel("Редактор лабиринтов с базой данных.\nСоздавайте уровни, расставляйте стены\nи находите путь от старта до финиша.")
-        d.setStyleSheet("font-size: 12px; color: #555;")
+        description = QLabel(
+            "Редактор лабиринтов с базой данных.\n"
+            "Создавайте уровни, расставляйте стены\n"
+            "и находите путь от старта до финиша."
+        )
+        description.setStyleSheet("font-size: 12px; color: #555;")
 
-        b = QPushButton("Начать")
-        b.setFixedWidth(150)
-        b.setStyleSheet("""
+        button = QPushButton("Начать")
+        button.setFixedWidth(150)
+        button.setStyleSheet("""
             QPushButton {
                 border: 1px solid #888;
                 color: black;
@@ -202,27 +217,29 @@ class StartWindow(QWidget):
                 font-weight: bold;
             }
         """)
-        b.clicked.connect(self.go)
+        button.clicked.connect(self.go)
 
-        l.addStretch()
-        l.addWidget(t)
-        l.addWidget(d)
-        l.addSpacing(20)
-        l.addWidget(b)
-        l.addStretch()
+        layout.addStretch()
+        layout.addWidget(title)
+        layout.addWidget(description)
+        layout.addSpacing(20)
+        layout.addWidget(button)
+        layout.addStretch()
 
     def go(self):
-        self.w = MainWindow()
-        self.w.show()
+        self.window = MainWindow()
+        self.window.show()
         self.close()
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Картограф")
         self.resize(1100, 700)
+        self.showMaximized()
 
-        self.con = sqlite3.connect(DB)
+        self.connection = sqlite3.connect(DB)
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -243,17 +260,17 @@ class MainWindow(QMainWindow):
             }""")
 
     def build_menu(self):
-        m = self.menuBar()
-        f = m.addMenu("Файл")
+        menu_bar = self.menuBar()
+        file_menu = menu_bar.addMenu("Файл")
 
-        a = QAction("Экспорт в PNG", self)
-        a.triggered.connect(self.export_png)
-        f.addAction(a)
+        export_action = QAction("Экспорт в PNG", self)
+        export_action.triggered.connect(self.export_png)
+        file_menu.addAction(export_action)
 
-        f.addSeparator()
-        a = QAction("Выход", self)
-        a.triggered.connect(self.close)
-        f.addAction(a)
+        file_menu.addSeparator()
+        exit_action = QAction("Выход", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
 
     def build_levels(self):
         self.table = QTableWidget()
@@ -263,114 +280,124 @@ class MainWindow(QMainWindow):
         self.search.setPlaceholderText("Поиск...")
         self.search.textChanged.connect(self.filter_table)
 
-        b1 = QPushButton("Открыть")
-        b1.clicked.connect(self.open_selected_level)
-        b2 = QPushButton("Новый")
-        b2.clicked.connect(self.create_new_level)
+        open_button = QPushButton("Открыть")
+        open_button.clicked.connect(self.open_selected_level)
+        new_button = QPushButton("Новый")
+        new_button.clicked.connect(self.create_new_level)
 
-        t = QWidget()
-        l = QVBoxLayout(t)
-        l.addWidget(self.search)
-        l.addWidget(self.table)
-        l.addWidget(b1)
-        l.addWidget(b2)
-        self.tabs.addTab(t, "Уровни")
+        levels_widget = QWidget()
+        levels_layout = QVBoxLayout(levels_widget)
+        levels_layout.addWidget(self.search)
+        levels_layout.addWidget(self.table)
+        levels_layout.addWidget(open_button)
+        levels_layout.addWidget(new_button)
+        self.tabs.addTab(levels_widget, "Уровни")
 
         self.fill_table()
 
     def fill_table(self, text=""):
-        cur = self.con.cursor()
+        cursor = self.connection.cursor()
         if text:
-            res = cur.execute(
+            result = cursor.execute(
                 "SELECT id, name, width, height FROM levels WHERE name LIKE ? ORDER BY id",
                 (f"%{text}%",)
             ).fetchall()
         else:
-            res = cur.execute("SELECT id, name, width, height FROM levels ORDER BY id").fetchall()
+            result = cursor.execute(
+                "SELECT id, name, width, height FROM levels ORDER BY id"
+            ).fetchall()
 
         self.table.clear()
         self.table.setColumnCount(4)
-        self.table.setRowCount(len(res))
+        self.table.setRowCount(len(result))
         self.table.setHorizontalHeaderLabels(["ID", "Название", "Ширина", "Высота"])
 
-        for i, r in enumerate(res):
-            for j, v in enumerate(r):
-                self.table.setItem(i, j, QTableWidgetItem(str(v)))
+        for row_index, row in enumerate(result):
+            for column_index, value in enumerate(row):
+                self.table.setItem(
+                    row_index, column_index, QTableWidgetItem(str(value))
+                )
 
     def filter_table(self, text):
         self.fill_table(text)
 
     def build_editor(self):
         self.editor = QWidget()
-        l = QHBoxLayout(self.editor)
+        editor_layout = QHBoxLayout(self.editor)
 
-        t = QVBoxLayout()
-        t.addWidget(QLabel("Инструменты:"))
+        tools_layout = QVBoxLayout()
+        tools_layout.addWidget(QLabel("Инструменты:"))
 
-        b = QPushButton("🧱 Стена")
-        b.clicked.connect(lambda: self.canvas.set_tool("wall"))
-        t.addWidget(b)
+        wall_button = QPushButton("🧱 Стена")
+        wall_button.clicked.connect(lambda: self.canvas.set_tool("wall"))
+        tools_layout.addWidget(wall_button)
 
-        b = QPushButton("🟢 Старт")
-        b.clicked.connect(lambda: self.canvas.set_tool("start"))
-        t.addWidget(b)
+        start_button = QPushButton("🟢 Старт")
+        start_button.clicked.connect(lambda: self.canvas.set_tool("start"))
+        tools_layout.addWidget(start_button)
 
-        b = QPushButton("🟡 Финиш")
-        b.clicked.connect(lambda: self.canvas.set_tool("finish"))
-        t.addWidget(b)
+        finish_button = QPushButton("🟡 Финиш")
+        finish_button.clicked.connect(lambda: self.canvas.set_tool("finish"))
+        tools_layout.addWidget(finish_button)
 
-        b = QPushButton("👾 Враг")
-        b.clicked.connect(lambda: self.canvas.set_tool("enemy"))
-        t.addWidget(b)
+        enemy_button = QPushButton("👾 Враг")
+        enemy_button.clicked.connect(lambda: self.canvas.set_tool("enemy"))
+        tools_layout.addWidget(enemy_button)
 
-        b = QPushButton("🧽 Ластик")
-        b.clicked.connect(lambda: self.canvas.set_tool("erase"))
-        t.addWidget(b)
+        erase_button = QPushButton("🧽 Ластик")
+        erase_button.clicked.connect(lambda: self.canvas.set_tool("erase"))
+        tools_layout.addWidget(erase_button)
 
-        t.addStretch()
+        tools_layout.addStretch()
 
-        b = QPushButton("🔎 Найти путь")
-        b.clicked.connect(lambda: self.canvas.find_path())
-        t.addWidget(b)
+        path_button = QPushButton("🔎 Найти путь")
+        path_button.clicked.connect(lambda: self.canvas.find_path())
+        tools_layout.addWidget(path_button)
 
-        b = QPushButton("📊 Статистика")
-        b.clicked.connect(self.show_stats)
-        t.addWidget(b)
+        stats_button = QPushButton("📊 Статистика")
+        stats_button.clicked.connect(self.show_stats)
+        tools_layout.addWidget(stats_button)
 
-        self.canvas = Canvas(self.con)
+        self.canvas = Canvas(self.connection)
 
-        l.addLayout(t)
-        l.addWidget(self.canvas, 1)
+        editor_layout.addLayout(tools_layout)
+        editor_layout.addWidget(self.canvas, 1)
         self.tabs.addTab(self.editor, "Редактор")
 
     def create_new_level(self):
-        n, ok = QInputDialog.getText(self, "Новый уровень", "Название:")
-        if not ok or not n.strip(): return
+        name, ok = QInputDialog.getText(self, "Новый уровень", "Название:")
+        if not ok or not name.strip():
+            return
 
-        w, ok = QInputDialog.getInt(self, "Размер", "Ширина:", 20, 5, 60)
-        if not ok: return
+        width, ok = QInputDialog.getInt(self, "Размер", "Ширина:", 20, 5, 60)
+        if not ok:
+            return
 
-        h, ok = QInputDialog.getInt(self, "Размер", "Высота:", 15, 5, 40)
-        if not ok: return
+        height, ok = QInputDialog.getInt(self, "Размер", "Высота:", 15, 5, 40)
+        if not ok:
+            return
 
-        cur = self.con.cursor()
-        cur.execute("INSERT INTO levels (name, width, height) VALUES (?, ?, ?)", (n, w, h))
-        self.con.commit()
+        cursor = self.connection.cursor()
+        cursor.execute(
+            "INSERT INTO levels (name, width, height) VALUES (?, ?, ?)",
+            (name, width, height)
+        )
+        self.connection.commit()
 
         self.fill_table()
-        QMessageBox.information(self, "Успех", f"Уровень '{n}' создан!")
+        QMessageBox.information(self, "Успех", f"Уровень '{name}' создан!")
 
     def open_selected_level(self):
-        r = self.table.currentRow()
-        if r < 0:
+        row = self.table.currentRow()
+        if row < 0:
             QMessageBox.warning(self, "Внимание", "Выберите уровень!")
             return
 
-        level_id = int(self.table.item(r, 0).text())
-        w = int(self.table.item(r, 2).text())
-        h = int(self.table.item(r, 3).text())
+        level_id = int(self.table.item(row, 0).text())
+        width = int(self.table.item(row, 2).text())
+        height = int(self.table.item(row, 3).text())
 
-        self.canvas.set_level(level_id, w, h)
+        self.canvas.set_level(level_id, width, height)
         self.tabs.setCurrentWidget(self.editor)
         self.setWindowTitle(f"Картограф — Уровень #{level_id}")
 
@@ -379,11 +406,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Сначала откройте уровень!")
             return
 
-        p, _ = QFileDialog.getSaveFileName(self, "Экспорт PNG", "map.png", "PNG (*.png)")
-        if p:
-            pix = QPixmap(self.canvas.size())
-            self.canvas.render(pix)
-            pix.save(p)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Экспорт PNG", "map.png", "PNG (*.png)"
+        )
+        if path:
+            pixmap = QPixmap(self.canvas.size())
+            self.canvas.render(pixmap)
+            pixmap.save(path)
             QMessageBox.information(self, "Успех", "Карта сохранена!")
 
     def show_stats(self):
@@ -391,26 +420,26 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Сначала откройте уровень!")
             return
 
-        cur = self.con.cursor()
-        res = cur.execute("""
+        cursor = self.connection.cursor()
+        result = cursor.execute("""
             SELECT kind, COUNT(*) FROM tiles
             WHERE level_id = ? GROUP BY kind
         """, (self.canvas.level_id,)).fetchall()
 
-        if not res:
+        if not result:
             QMessageBox.information(self, "Статистика", "На уровне пока нет объектов.")
             return
 
         text = f"Уровень #{self.canvas.level_id}:\n\n"
-        for k, c in res:
-            text += f"{k}: {c}\n"
+        for kind, count in result:
+            text += f"{kind}: {count}\n"
 
         QMessageBox.information(self, "Статистика", text)
 
 
 if __name__ == "__main__":
     init_db()
-    app = QApplication(sys.argv)
-    s = StartWindow()
-    s.show()
-    sys.exit(app.exec())
+    application = QApplication(sys.argv)
+    start_window = StartWindow()
+    start_window.show()
+    sys.exit(application.exec())
